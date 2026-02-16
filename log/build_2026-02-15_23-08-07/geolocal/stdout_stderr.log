@@ -1,0 +1,37 @@
+running egg_info
+creating ../../build/geolocal/geolocal.egg-info
+writing ../../build/geolocal/geolocal.egg-info/PKG-INFO
+writing dependency_links to ../../build/geolocal/geolocal.egg-info/dependency_links.txt
+writing entry points to ../../build/geolocal/geolocal.egg-info/entry_points.txt
+writing requirements to ../../build/geolocal/geolocal.egg-info/requires.txt
+writing top-level names to ../../build/geolocal/geolocal.egg-info/top_level.txt
+writing manifest file '../../build/geolocal/geolocal.egg-info/SOURCES.txt'
+reading manifest file '../../build/geolocal/geolocal.egg-info/SOURCES.txt'
+writing manifest file '../../build/geolocal/geolocal.egg-info/SOURCES.txt'
+running build
+running build_py
+creating /home/akshit/geo_ws/build/geolocal/build
+creating /home/akshit/geo_ws/build/geolocal/build/lib
+creating /home/akshit/geo_ws/build/geolocal/build/lib/geolocal
+copying geolocal/geolocal.py -> /home/akshit/geo_ws/build/geolocal/build/lib/geolocal
+copying geolocal/__init__.py -> /home/akshit/geo_ws/build/geolocal/build/lib/geolocal
+running install
+running install_lib
+creating /home/akshit/geo_ws/install/geolocal/lib/python3.10/site-packages/geolocal
+copying /home/akshit/geo_ws/build/geolocal/build/lib/geolocal/geolocal.py -> /home/akshit/geo_ws/install/geolocal/lib/python3.10/site-packages/geolocal
+copying /home/akshit/geo_ws/build/geolocal/build/lib/geolocal/__init__.py -> /home/akshit/geo_ws/install/geolocal/lib/python3.10/site-packages/geolocal
+byte-compiling /home/akshit/geo_ws/install/geolocal/lib/python3.10/site-packages/geolocal/geolocal.py to geolocal.cpython-310.pyc
+byte-compiling /home/akshit/geo_ws/install/geolocal/lib/python3.10/site-packages/geolocal/__init__.py to __init__.cpython-310.pyc
+running install_data
+creating /home/akshit/geo_ws/install/geolocal/share/ament_index
+creating /home/akshit/geo_ws/install/geolocal/share/ament_index/resource_index
+creating /home/akshit/geo_ws/install/geolocal/share/ament_index/resource_index/packages
+copying resource/geolocal -> /home/akshit/geo_ws/install/geolocal/share/ament_index/resource_index/packages
+copying package.xml -> /home/akshit/geo_ws/install/geolocal/share/geolocal
+creating /home/akshit/geo_ws/install/geolocal/share/geolocal/models
+copying geolocal/best1.pt -> /home/akshit/geo_ws/install/geolocal/share/geolocal/models
+running install_egg_info
+Copying ../../build/geolocal/geolocal.egg-info to /home/akshit/geo_ws/install/geolocal/lib/python3.10/site-packages/geolocal-0.0.0-py3.10.egg-info
+running install_scripts
+Installing geolocal script to /home/akshit/geo_ws/install/geolocal/lib/geolocal
+writing list of installed files to '/home/akshit/geo_ws/build/geolocal/install.log'

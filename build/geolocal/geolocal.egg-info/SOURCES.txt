@@ -1,0 +1,17 @@
+package.xml
+setup.cfg
+setup.py
+../../build/geolocal/geolocal.egg-info/PKG-INFO
+../../build/geolocal/geolocal.egg-info/SOURCES.txt
+../../build/geolocal/geolocal.egg-info/dependency_links.txt
+../../build/geolocal/geolocal.egg-info/entry_points.txt
+../../build/geolocal/geolocal.egg-info/requires.txt
+../../build/geolocal/geolocal.egg-info/top_level.txt
+../../build/geolocal/geolocal.egg-info/zip-safe
+geolocal/__init__.py
+geolocal/best1.pt
+geolocal/geolocal.py
+resource/geolocal
+test/test_copyright.py
+test/test_flake8.py
+test/test_pep257.py

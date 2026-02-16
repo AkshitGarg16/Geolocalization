@@ -1,0 +1,3 @@
+[console_scripts]
+geolocal = geolocal.geolocal:main
+
