@@ -19,11 +19,17 @@ class CoordinateTransformer:
         
         self.EARTH_RADIUS = 6378137.0
         
-    def pixel_to_camera_ray(self, u, v):
+    def pixel_to_camera_ray(self, u, v, zoom=1.0):
    
+        # Optical zoom scales the focal length; the principal point is unchanged.
+        # `zoom` is the ratio relative to the zoom the intrinsics were calibrated at.
+        if zoom is None or zoom <= 0:
+            zoom = 1.0
+        fx = self.fx * zoom
+        fy = self.fy * zoom
 
-        X_cam = (u - self.cx) / self.fx
-        Y_cam = (v - self.cy) / self.fy
+        X_cam = (u - self.cx) / fx
+        Y_cam = (v - self.cy) / fy
         Z_cam = 1.0
         
 
@@ -99,10 +105,10 @@ class CoordinateTransformer:
         #return target_lat, target_lon
     
     def pixel_to_gps(self, u, v, drone_lat, drone_lon, drone_altitude, 
-                     roll, pitch, yaw, ground_altitude=0.0):
+                     roll, pitch, yaw, ground_altitude=0.0, zoom=1.0):
         
 
-        ray_camera = self.pixel_to_camera_ray(u, v)
+        ray_camera = self.pixel_to_camera_ray(u, v, zoom)
         
 
         ray_body = self.camera_to_body_frame(ray_camera)

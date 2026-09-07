@@ -1,0 +1,9 @@
+# Offline geolocalisation pipeline
+ultralytics>=8.0
+opencv-python>=4.5
+numpy>=1.23
+scipy>=1.9
+scikit-learn>=1.1
+
+# Live visual-servoing mode only (src/person_tracker.py)
+pymavlink>=2.4

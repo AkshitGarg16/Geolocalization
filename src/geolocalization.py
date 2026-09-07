@@ -2,10 +2,16 @@
 Person Geolocalisation — standalone (no ROS)
 =============================================
 Data sources
-  - Camera  : cv2.VideoCapture  (USB / RTSP / GStreamer)
-  - GPS/IMU : pymavlink MAVLink stream (serial, UDP, or TCP)
+  - Video   : recorded fcb-*.mp4 (cv2.VideoCapture)
+  - GPS/IMU : matching fcb-*.csv, one row per video frame
 
-All ROS2 / MAVROS / cv_bridge / message_filters dependencies have been removed.
+The recorder writes the .mp4 and the .csv together, frame-for-frame, so
+telemetry is looked up by frame index — no clock synchronisation needed.
+The CSV also carries the camera's optical zoom_ratio per frame, which is
+applied to the focal length during the pixel -> GPS projection.
+
+All ROS2 / MAVROS / cv_bridge / message_filters / pymavlink dependencies
+have been removed.
 """
 
 from __future__ import annotations
@@ -14,16 +20,15 @@ import csv
 import logging
 import math
 import os
-import threading
 import time
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from datetime import datetime
 
 import cv2
 import numpy as np
 from scipy.spatial.transform import Rotation
 from sklearn.cluster import DBSCAN
-from pymavlink import mavutil
 
 from yolo_detector import YOLODetector
 from coordinate_transformer import CoordinateTransformer
@@ -40,33 +45,29 @@ logging.basicConfig(
 log = logging.getLogger('geolocalization')
 
 # ---------------------------------------------------------------------------
-# Constants / default config
+# Constants
 # ---------------------------------------------------------------------------
 
 EARTH_RADIUS_M = 6_371_000.0
 
 CONFIG = {
-    # --- Camera ---
-    'camera_source':         0,           # int index, or 'rtsp://...' / 'udp://' etc.
-    'camera_width':          640,
-    'camera_height':         480,
-    'camera_fps':            30,
+    # --- Recorded video + telemetry (one CSV row per video frame) ---
+    'video_source':          '/home/akshit/Downloads/fcb-20260903-175559.mp4',
+    'telemetry_csv':         '/home/akshit/Downloads/fcb-20260903-175559.csv',
 
-    # --- MAVLink ---
-    'mavlink_connection':    'udpin:0.0.0.0:14550',   # serial: '/dev/ttyUSB0,57600'
-    'mavlink_dialect':       'ardupilotmega',
+    # --- Optical zoom ---
+    # Zoom ratio the intrinsic matrix was calibrated at. The CSV's zoom_ratio
+    # is divided by this to get the focal-length scale factor for each frame.
+    'zoom_baseline':         1.0,
 
     # --- YOLO ---
-    'yolo_model':            'best1.pt',
+    'yolo_model':            '/home/akshit/geolocalization/models/best1.pt',
     'confidence_threshold':  0.5,
 
     # --- Output ---
-    'csv_output_path':       'detections.csv',
-    'clustered_csv_path':    'clustered_detections.csv',
+    'csv_output_path':       '/home/akshit/geolocalization/outputs/detections.csv',
+    'clustered_csv_path':    '/home/akshit/geolocalization/outputs/clustered_detections.csv',
     'show_preview':          True,        # display cv2 window
-
-    # --- Synchronisation ---
-    'max_cache_age':         0.5,         # seconds – discard stale telemetry
 
     # --- DBSCAN clustering ---
     'cluster_eps_metres':    2.0,
@@ -75,7 +76,7 @@ CONFIG = {
 }
 
 # ---------------------------------------------------------------------------
-# Helpers – geo maths (unchanged from original)
+# Helpers – geo maths
 # ---------------------------------------------------------------------------
 
 def haversine_metres(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -105,7 +106,7 @@ def xy_to_latlon(x: float, y: float, mean_lat: float, mean_lon: float):
     return lat, lon
 
 # ---------------------------------------------------------------------------
-# Detection buffer + DBSCAN (unchanged logic)
+# Detection buffer + DBSCAN
 # ---------------------------------------------------------------------------
 
 class DetectionBuffer:
@@ -167,111 +168,118 @@ class DetectionBuffer:
         self._confs.clear()
 
 # ---------------------------------------------------------------------------
-# MAVLink telemetry reader  (replaces all ROS subscribers)
+# CSV telemetry reader  (replaces the MAVLink stream)
 # ---------------------------------------------------------------------------
 
 @dataclass
-class TelemetryState:
-    """Thread-safe snapshot of the latest MAVLink telemetry."""
+class TelemetrySample:
+    """One row of the recorder's per-frame telemetry CSV."""
+    frame:    int
+    ts:       float                 # seconds (UTC epoch, or t_mono_s as fallback)
     lat:      float | None = None   # degrees
     lon:      float | None = None   # degrees
-    alt_agl:  float | None = None   # metres above ground
+    alt_agl:  float | None = None   # metres above launch (alt_rel_m)
     roll:     float | None = None   # radians
     pitch:    float | None = None   # radians
-    yaw:      float | None = None   # radians (from compass heading)
+    yaw:      float | None = None   # radians
     compass:  float | None = None   # degrees (raw heading)
-    ts:       float        = field(default_factory=time.monotonic)
-    _lock:    threading.Lock = field(default_factory=threading.Lock, repr=False)
+    zoom:     float        = 1.0    # optical zoom ratio reported by the camera
 
-    def update(self, **kwargs):
-        with self._lock:
-            for k, v in kwargs.items():
-                setattr(self, k, v)
-            self.ts = time.monotonic()
-
-    def snapshot(self) -> 'TelemetryState':
-        with self._lock:
-            import copy
-            return copy.copy(self)
+    def is_complete(self) -> bool:
+        return not any(v is None for v in
+                       (self.lat, self.lon, self.alt_agl,
+                        self.roll, self.pitch, self.yaw))
 
 
-class MAVLinkReader(threading.Thread):
+def _as_float(row: dict, key: str) -> float | None:
+    """Parse a CSV field, returning None when it is missing/blank/non-numeric."""
+    raw = row.get(key)
+    if raw is None:
+        return None
+    raw = raw.strip()
+    if not raw:
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    return None if math.isnan(value) else value
+
+
+def _parse_wall_time(raw: str | None) -> float | None:
+    """'2026-09-03T12:25:59.300+00:00' -> UTC epoch seconds."""
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.strip()).timestamp()
+    except ValueError:
+        return None
+
+
+class CSVTelemetryReader:
     """
-    Background thread that consumes MAVLink messages and fills a TelemetryState.
+    Loads the recorder's fcb-*.csv into memory, indexed by frame number.
 
-    Messages used:
-      GLOBAL_POSITION_INT  → lat, lon, relative altitude, yaw (compass)
-      ATTITUDE             → roll, pitch  (used for perspective correction)
+    Expected columns (extra columns are ignored):
+      frame, t_wall_utc, t_mono_s,
+      lat_deg, lon_deg, alt_rel_m,
+      roll_deg, pitch_deg, yaw_deg, heading_deg,
+      zoom_ratio
     """
 
-    def __init__(self, connection_string: str, state: TelemetryState,
-                 dialect: str = 'ardupilotmega'):
-        super().__init__(daemon=True, name='mavlink-reader')
-        self.connection_string = connection_string
-        self.state             = state
-        self.dialect           = dialect
-        self._stop_event       = threading.Event()
+    def __init__(self, csv_path: str):
+        self.csv_path = csv_path
+        self._samples: dict[int, TelemetrySample] = {}
+        self._load()
 
-    def stop(self):
-        self._stop_event.set()
+    def _load(self):
+        if not os.path.exists(self.csv_path):
+            raise FileNotFoundError(f'Telemetry CSV not found: {self.csv_path}')
 
-    def run(self):
-        log.info(f'MAVLink connecting → {self.connection_string}')
-        try:
-            mav = mavutil.mavlink_connection(
-                self.connection_string,
-                dialect=self.dialect,
-            )
-            mav.wait_heartbeat(timeout=10)
-            log.info('MAVLink heartbeat received ✓')
-        except Exception as exc:
-            log.error(f'MAVLink connection failed: {exc}')
-            return
+        with open(self.csv_path, newline='') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                frame = _as_float(row, 'frame')
+                if frame is None:
+                    continue
+                frame = int(frame)
 
-        # Request the two message streams we need at ~10 Hz
-        mav.mav.request_data_stream_send(
-            mav.target_system,
-            mav.target_component,
-            mavutil.mavlink.MAV_DATA_STREAM_POSITION,   # GLOBAL_POSITION_INT
-            10, 1,
-        )
-        mav.mav.request_data_stream_send(
-            mav.target_system,
-            mav.target_component,
-            mavutil.mavlink.MAV_DATA_STREAM_EXTRA1,     # ATTITUDE
-            10, 1,
-        )
+                ts = _parse_wall_time(row.get('t_wall_utc'))
+                if ts is None:
+                    ts = _as_float(row, 't_mono_s')
+                if ts is None:
+                    ts = 0.0
 
-        while not self._stop_event.is_set():
-            msg = mav.recv_match(
-                type=['GLOBAL_POSITION_INT', 'ATTITUDE'],
-                blocking=True,
-                timeout=1.0,
-            )
-            if msg is None:
-                continue
+                roll_deg  = _as_float(row, 'roll_deg')
+                pitch_deg = _as_float(row, 'pitch_deg')
+                yaw_deg   = _as_float(row, 'yaw_deg')
+                zoom      = _as_float(row, 'zoom_ratio')
 
-            mtype = msg.get_type()
-
-            if mtype == 'GLOBAL_POSITION_INT':
-                # lat/lon are in 1e-7 degrees; relative_alt in mm
-                lat     = msg.lat  * 1e-7
-                lon     = msg.lon  * 1e-7
-                alt_agl = msg.relative_alt * 1e-3          # mm → m
-                hdg_deg = msg.hdg * 1e-2                   # cdeg → deg
-                self.state.update(
-                    lat=lat,
-                    lon=lon,
-                    alt_agl=alt_agl,
-                    compass=hdg_deg,
-                    yaw=math.radians(hdg_deg),
+                self._samples[frame] = TelemetrySample(
+                    frame=frame,
+                    ts=ts,
+                    lat=_as_float(row, 'lat_deg'),
+                    lon=_as_float(row, 'lon_deg'),
+                    alt_agl=_as_float(row, 'alt_rel_m'),
+                    roll=None  if roll_deg  is None else math.radians(roll_deg),
+                    pitch=None if pitch_deg is None else math.radians(pitch_deg),
+                    yaw=None   if yaw_deg   is None else math.radians(yaw_deg),
+                    compass=_as_float(row, 'heading_deg'),
+                    zoom=1.0 if zoom is None or zoom <= 0 else zoom,
                 )
 
-            elif mtype == 'ATTITUDE':
-                self.state.update(
-                    roll=msg.roll,     # already radians
-                    pitch=msg.pitch,   # already radians
-                )
+        if not self._samples:
+            raise ValueError(f'No usable rows in telemetry CSV: {self.csv_path}')
+
+        log.info(f'Telemetry CSV loaded: {len(self._samples)} row(s) from '
+                 f'{self.csv_path} (frames {min(self._samples)}–{max(self._samples)})')
+
+    def __len__(self):
+        return len(self._samples)
+
+    def get(self, frame_index: int) -> TelemetrySample | None:
+        """Telemetry for a video frame, or None if that frame has no row."""
+        return self._samples.get(frame_index)
 
 # ---------------------------------------------------------------------------
 # CSV helpers  (unchanged logic, removed ROS logger)
@@ -334,7 +342,7 @@ class PersonLocalisationPipeline:
 
     def __init__(self, cfg: dict = CONFIG):
         self.cfg            = cfg
-        self.max_cache_age  = cfg['max_cache_age']
+        self.zoom_baseline  = cfg.get('zoom_baseline', 1.0) or 1.0
         self.jump_thresh_m  = cfg['cluster_jump_metres']
         self.csv_path       = cfg['csv_output_path']
         self.clustered_csv  = cfg['clustered_csv_path']
@@ -359,43 +367,34 @@ class PersonLocalisationPipeline:
         self._dbscan_eps         = cfg['cluster_eps_metres']
         self._dbscan_min_samples = cfg['cluster_min_samples']
 
-        # --- MAVLink telemetry ---
-        self._telem = TelemetryState()
-        self._mav_reader = MAVLinkReader(
-            connection_string=cfg['mavlink_connection'],
-            state=self._telem,
-            dialect=cfg['mavlink_dialect'],
-        )
-        self._mav_reader.start()
+        # --- Recorded telemetry (one row per video frame) ---
+        self._telem_reader = CSVTelemetryReader(cfg['telemetry_csv'])
 
     # ------------------------------------------------------------------ #
     # Telemetry helpers                                                    #
     # ------------------------------------------------------------------ #
 
-    def _check_cache_age(self, label: str) -> bool:
-        """Return True if the telemetry timestamp is fresh enough."""
-        age = time.monotonic() - self._telem.ts
-        if age > self.max_cache_age:
-            log.warning(f'Telemetry is {age:.2f}s old (max {self.max_cache_age}s) — skipping frame')
-            return False
-        return True
-
-    def _telemetry_ready(self) -> bool:
-        t = self._telem
-        if any(v is None for v in [t.lat, t.lon, t.alt_agl, t.roll, t.pitch, t.yaw]):
-            log.warning('Waiting for full telemetry …', )
-            return False
-        return self._check_cache_age('telemetry')
+    def _telemetry_for_frame(self, frame_index: int) -> TelemetrySample | None:
+        """Telemetry row for this video frame, or None if unusable."""
+        telem = self._telem_reader.get(frame_index)
+        if telem is None:
+            log.warning(f'No telemetry row for frame {frame_index} — skipping frame')
+            return None
+        if not telem.is_complete():
+            log.warning(f'Incomplete telemetry at frame {frame_index} — skipping frame')
+            return None
+        return telem
 
     # ------------------------------------------------------------------ #
     # Per-frame processing                                                 #
     # ------------------------------------------------------------------ #
 
-    def process_frame(self, frame: np.ndarray, timestamp_sec: float):
-        if not self._telemetry_ready():
+    def process_frame(self, frame: np.ndarray, frame_index: int):
+        telem = self._telemetry_for_frame(frame_index)
+        if telem is None:
             return frame    # return unmodified frame
 
-        telem = self._telem.snapshot()
+        timestamp_sec = telem.ts
         drone_lat  = telem.lat
         drone_lon  = telem.lon
         altitude   = telem.alt_agl
@@ -404,9 +403,13 @@ class PersonLocalisationPipeline:
         yaw        = telem.yaw
         compass    = telem.compass
 
+        # Focal-length scale factor for this frame's optical zoom.
+        zoom_factor = telem.zoom / self.zoom_baseline
+
         detections = self.detector.detect_persons(frame)
         if not detections:
-            return self._annotate_hud(frame, altitude, roll, pitch, yaw, compass, 0)
+            return self._annotate_hud(frame, altitude, roll, pitch, yaw, compass,
+                                      telem.zoom, 0)
 
         log.info(f'Detected {len(detections)} person(s) at t={timestamp_sec:.3f}s')
 
@@ -422,6 +425,7 @@ class PersonLocalisationPipeline:
                 drone_altitude=altitude,
                 roll=roll, pitch=pitch, yaw=yaw,
                 ground_altitude=0.0,
+                zoom=zoom_factor,
             )
 
             if result is None:
@@ -465,10 +469,10 @@ class PersonLocalisationPipeline:
 
         vis = self.detector.draw_detections(frame, detections, gps_coords)
         return self._annotate_hud(vis, altitude, roll, pitch, yaw, compass,
-                                  len(detections))
+                                  telem.zoom, len(detections))
 
     @staticmethod
-    def _annotate_hud(frame, altitude, roll, pitch, yaw, compass, n_det):
+    def _annotate_hud(frame, altitude, roll, pitch, yaw, compass, zoom, n_det):
         overlay = frame.copy()
         lines = [
             f"Alt: {altitude:.1f}m AGL",
@@ -476,6 +480,7 @@ class PersonLocalisationPipeline:
             f"Pitch: {np.rad2deg(pitch):.1f} deg",
             f"Yaw:   {np.rad2deg(yaw):.1f} deg",
             f"Hdg:   {compass:.1f} deg",
+            f"Zoom:  {zoom:.1f}x",
             f"Detections: {n_det}",
         ]
         for i, text in enumerate(lines):
@@ -488,26 +493,31 @@ class PersonLocalisationPipeline:
     # ------------------------------------------------------------------ #
 
     def run(self):
-        src = self.cfg['camera_source']
+        src = self.cfg['video_source']
         cap = cv2.VideoCapture(src)
         if not cap.isOpened():
-            log.error(f'Cannot open camera source: {src}')
+            log.error(f'Cannot open video source: {src}')
             return
 
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH,  self.cfg['camera_width'])
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.cfg['camera_height'])
-        cap.set(cv2.CAP_PROP_FPS,          self.cfg['camera_fps'])
-        log.info(f'Camera opened: {src}')
+        n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        log.info(f'Video opened: {src} ({n_frames} frames)')
+        if n_frames > 0 and n_frames != len(self._telem_reader):
+            log.warning(
+                f'Video has {n_frames} frames but the telemetry CSV has '
+                f'{len(self._telem_reader)} row(s) — frames without a row are skipped'
+            )
+
+        frame_index = 0
 
         try:
             while True:
                 ok, frame = cap.read()
                 if not ok:
-                    log.error('Camera read failed — exiting loop')
+                    log.info('End of video — exiting loop')
                     break
 
-                timestamp_sec = time.time()
-                vis = self.process_frame(frame, timestamp_sec)
+                vis = self.process_frame(frame, frame_index)
+                frame_index += 1
 
                 if self.cfg.get('show_preview', True):
                     cv2.imshow('Person Geolocalisation', vis)
@@ -528,7 +538,6 @@ class PersonLocalisationPipeline:
                 clusters = buf.flush()
                 log_clusters(self.clustered_csv, slot, clusters)
 
-        self._mav_reader.stop()
         cap.release()
         cv2.destroyAllWindows()
         log.info('Shutdown complete.')
