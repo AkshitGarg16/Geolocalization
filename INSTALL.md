@@ -89,12 +89,11 @@ with your own camera calibration, and set `zoom_baseline` to the optical zoom
 you calibrated at — otherwise every coordinate carries a systematic error. See
 the README's *Camera intrinsics* section.
 
-## 6. Create the output directory and run
+## 6. Run
 
-The output CSVs are opened for writing directly, so their directory must exist:
+The output directory is created automatically if it is missing.
 
 ```bash
-mkdir -p outputs
 cd src
 python3 geolocalization.py
 ```
@@ -124,7 +123,6 @@ buffers …` writes `outputs/clustered_detections.csv`.
 | `FileNotFoundError: Telemetry CSV not found` | `telemetry_csv` path is wrong |
 | `No usable rows in telemetry CSV` | CSV has no numeric `frame` column |
 | `Cannot open video source` | Bad path, or missing codec — try `pip install opencv-python` over a headless build, or re-encode the file |
-| `FileNotFoundError` on `outputs/detections.csv` | `mkdir -p outputs` (step 6) |
 | Every frame logs `No telemetry row for frame N` | Video and CSV are not the matched pair, or frame numbering is offset |
 | `Incomplete telemetry at frame N` | Blank `lat_deg`/`alt_rel_m`/attitude fields in that row — frame is skipped by design |
 | `Could not project GPS` | Ray points at or above the horizon; expected for near-horizon detections |

@@ -285,7 +285,14 @@ class CSVTelemetryReader:
 # CSV helpers  (unchanged logic, removed ROS logger)
 # ---------------------------------------------------------------------------
 
+def _ensure_parent_dir(path: str):
+    """Create the directory the CSV lives in, so a fresh clone can just run."""
+    parent = os.path.dirname(os.path.abspath(path))
+    os.makedirs(parent, exist_ok=True)
+
+
 def init_csv(path: str):
+    _ensure_parent_dir(path)
     with open(path, 'w', newline='') as f:
         csv.writer(f).writerow([
             'timestamp_sec', 'person_idx',
@@ -297,6 +304,7 @@ def init_csv(path: str):
 
 
 def init_clustered_csv(path: str):
+    _ensure_parent_dir(path)
     with open(path, 'w', newline='') as f:
         csv.writer(f).writerow([
             'person_slot', 'cluster_id',

@@ -96,10 +96,11 @@ The modules import each other by bare name (`from yolo_detector import ...`),
 so **run them from inside `src/`**:
 
 ```bash
-mkdir -p outputs
 cd src
 python3 geolocalization.py
 ```
+
+The output directory is created automatically if it does not exist.
 
 Outputs, at the paths set in `CONFIG`:
 
@@ -191,5 +192,5 @@ src/
 models/
   best1.pt                     fine-tuned person detector
   yolov8n.pt                   stock YOLOv8-nano
-outputs/                       created on first run (git-ignored)
+outputs/                       created automatically on first run (git-ignored)
 ```
