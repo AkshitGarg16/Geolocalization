@@ -1,9 +1,22 @@
-# Offline geolocalisation pipeline
+# Geolocalisation pipeline
 ultralytics>=8.0
 opencv-python>=4.5
 numpy>=1.23
 scipy>=1.9
 scikit-learn>=1.1
 
+# H.265 decode of the bag's /fcb/image/ffmpeg packets (src/bag_source.py)
+av>=10.0
+
+# Reading the bag itself needs ROS 2 on the PYTHONPATH — rosbag2_py, rclpy,
+# rosidl_runtime_py and the sensor_msgs interfaces. Those ship with the ROS
+# distribution (`source /opt/ros/humble/setup.bash`), not with pip, so they
+# are deliberately not listed here. See INSTALL.md.
+
 # Live visual-servoing mode only (src/person_tracker.py)
 pymavlink>=2.4
+
+# YOLOE text-prompt encoder (open-vocabulary prompting in src/yolo_detector.py).
+# ultralytics auto-installs these on first run; pinned here for offline setups.
+ftfy>=6.0
+clip @ git+https://github.com/ultralytics/CLIP.git

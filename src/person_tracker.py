@@ -11,6 +11,7 @@ Body-frame velocity mapping (downward-facing camera):
 
 from __future__ import annotations
 
+import os
 import logging
 import math
 import time
@@ -18,7 +19,7 @@ import threading
 
 import cv2
 import numpy as np
-from ultralytics import YOLO
+from ultralytics import YOLO, YOLOE
 from pymavlink import mavutil
 
 # ---------------------------------------------------------------------------
@@ -31,6 +32,19 @@ logging.basicConfig(
     datefmt='%H:%M:%S',
 )
 log = logging.getLogger('person_tracker')
+
+# Open-vocabulary prompt for YOLOE models. Listing only 'person' makes the
+# model's class 0 the person class, matching the classes=[0] detection filter.
+YOLOE_CLASSES = ['person']
+
+
+def _load_detector(model_path):
+    """Load a YOLO or YOLOE checkpoint, prompting YOLOE for 'person' only."""
+    if 'yoloe' in os.path.basename(str(model_path)).lower():
+        model = YOLOE(model_path)
+        model.set_classes(YOLOE_CLASSES, model.get_text_pe(YOLOE_CLASSES))
+        return model
+    return YOLO(model_path)
 
 # ---------------------------------------------------------------------------
 # Default configuration  (edit here or override at runtime)
@@ -47,7 +61,10 @@ CONFIG = {
     'mavlink_dialect':    'ardupilotmega',
 
     # YOLO
-    'model_path':         'best1.pt',
+    # 26L, not 26X: this is a realtime control loop. On the RTX 3050 at 640x480
+    # 26X runs ~16 FPS, below the 20 Hz publish_rate below, while 26L runs ~32.
+    # The offline pipeline in geolocalization.py uses 26X, where cost is free.
+    'model_path':         '/home/akshit/geolocalization/models/yoloe-26l-seg.pt',
     'confidence_thresh':  0.45,
 
     # Control
@@ -137,9 +154,9 @@ class PersonCenteringTracker:
         self._min_dt      = 1.0 / cfg['publish_rate']
         self._last_pub_ts = 0.0
 
-        log.info(f"Loading YOLOv8 model: {cfg['model_path']}")
-        self.model = YOLO(cfg['model_path'])
-        log.info('YOLOv8 loaded ✓')
+        log.info(f"Loading YOLO model: {cfg['model_path']}")
+        self.model = _load_detector(cfg['model_path'])
+        log.info('YOLO model loaded ✓')
 
         self.mav = MAVLinkVelocitySender(
             connection_string=cfg['mavlink_connection'],

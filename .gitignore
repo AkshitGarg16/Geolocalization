@@ -7,3 +7,6 @@ outputs/
 *.csv
 .vscode/
 .idea/
+
+# YOLOE text-prompt encoder cache (auto-downloaded, ~250 MB)
+mobileclip*.ts
